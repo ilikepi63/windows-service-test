@@ -13,9 +13,9 @@ fn main() {
 #[cfg(windows)]
 mod ping_service {
     use std::io::{Error, ErrorKind};
+    use std::sync::mpsc;
     use std::{ffi::OsString, time::Duration};
     use tokio::runtime::Runtime;
-    use std::sync::mpsc;
     use tokio::time;
     use windows_service::{
         define_windows_service,
@@ -54,12 +54,11 @@ mod ping_service {
             match control_event {
                 // SCM check to see if the service is still healthy
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                ServiceControl::Stop =>  {
+                ServiceControl::Stop => {
                     shutdown_tx.send(()).unwrap();
                     ServiceControlHandlerResult::NoError
-                },
+                }
                 _ => ServiceControlHandlerResult::NotImplemented,
-
             }
         };
 
@@ -87,37 +86,33 @@ mod ping_service {
 
         async fn await_shutdown(rx: mpsc::Receiver<()>) -> Result<()> {
             // polls the current rx, if a there was a shutdown receiver, this will then resolve the future
-            loop{
+            loop {
                 match rx.recv_timeout(Duration::from_millis(100)) {
                     // Break the loop either upon stop or channel disconnect
                     Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-    
+
                     // Continue work if no events were received within the timeout
                     Err(mpsc::RecvTimeoutError::Timeout) => (),
                 };
-            };
+            }
 
             Ok(())
         }
 
-
         async fn runtime() -> Result<()> {
-            loop{
+            loop {
                 time::sleep(time::Duration::from_millis(10000)).await;
 
                 if let Ok(result) = reqwest::get(URL).await {
-                    if let  Ok(_body) = result.text().await {
-                    }
+                    if let Ok(_body) = result.text().await {}
                 }
             }
         }
 
         // Spawn the root task
         rt.block_on(async {
-
             let shutdown_join_handle = tokio::spawn(await_shutdown(shutdown_rx));
             let runtime_handle = tokio::spawn(runtime());
-
 
             tokio::select! {
                 _ = shutdown_join_handle => {},
@@ -135,10 +130,10 @@ mod ping_service {
             wait_hint: Duration::default(),
             process_id: None,
         }) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(_) => {}
         };
-        
+
         Ok(())
     }
 }
