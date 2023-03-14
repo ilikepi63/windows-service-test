@@ -1,22 +1,10 @@
-// Ping service example.
-//
-// You can install and uninstall this service using other example programs.
-// All commands mentioned below shall be executed in Command Prompt with Administrator privileges.
-//
-// Service installation: `install_service.exe`
-// Service uninstallation: `uninstall_service.exe`
-//
-// Start the service: `net start ping_service`
-// Stop the service: `net stop ping_service`
-//
-// Ping server sends a text message to local UDP port 1234 once a second.
-// You can verify that service works by running netcat, i.e: `ncat -ul 1234`.
-
 #[cfg(windows)]
-fn main() -> windows_service::Result<()> {
+#[tokio::main]
+async fn main() -> windows_service::Result<()> {
     ping_service::run()
 }
 
+// TODO - add the unix based daemon as well
 #[cfg(not(windows))]
 fn main() {
     panic!("This program is only intended to run on Windows.");
@@ -24,12 +12,11 @@ fn main() {
 
 #[cfg(windows)]
 mod ping_service {
-    use std::{
-        ffi::OsString,
-        net::{IpAddr, SocketAddr, UdpSocket},
-        sync::mpsc,
-        time::Duration,
-    };
+    use std::io::{Error, ErrorKind};
+    use std::{ffi::OsString, time::Duration};
+    use tokio::runtime::Runtime;
+    use std::sync::mpsc;
+    use tokio::time;
     use windows_service::{
         define_windows_service,
         service::{
@@ -40,31 +27,21 @@ mod ping_service {
         service_dispatcher, Result,
     };
 
-    const SERVICE_NAME: &str = "ping_service";
+    const SERVICE_NAME: &str = "test_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
-
-    const LOOPBACK_ADDR: [u8; 4] = [127, 0, 0, 1];
-    const RECEIVER_PORT: u16 = 1234;
-    const PING_MESSAGE: &str = "ping\n";
+    const URL: &str = "https://eolr5l8a0t401et.m.pipedream.net";
 
     pub fn run() -> Result<()> {
-        // Register generated `ffi_service_main` with the system and start the service, blocking
-        // this thread until the service is stopped.
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
     }
 
-    // Generate the windows service boilerplate.
-    // The boilerplate contains the low-level service entry function (ffi_service_main) that parses
-    // incoming service arguments into Vec<OsString> and passes them to user defined service
-    // entry (my_service_main).
-    define_windows_service!(ffi_service_main, my_service_main);
+    // generate boilerplate
+    define_windows_service!(ffi_service_main, service_main);
 
-    // Service entry function which is called on background thread by the system with service
-    // parameters. There is no stdout or stderr at this point so make sure to configure the log
-    // output to file if needed.
-    pub fn my_service_main(_arguments: Vec<OsString>) {
+    // entry point
+    pub fn service_main(_arguments: Vec<OsString>) {
         if let Err(_e) = run_service() {
-            // Handle the error, by logging or something.
+            // no stdout, log to file potentially?
         }
     }
 
@@ -75,22 +52,18 @@ mod ping_service {
         // Define system service event handler that will be receiving service events.
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
             match control_event {
-                // Notifies a service to report its current status information to the service
-                // control manager. Always return NoError even if not implemented.
+                // SCM check to see if the service is still healthy
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-
-                // Handle stop
-                ServiceControl::Stop => {
+                ServiceControl::Stop =>  {
                     shutdown_tx.send(()).unwrap();
                     ServiceControlHandlerResult::NoError
-                }
-
+                },
                 _ => ServiceControlHandlerResult::NotImplemented,
+
             }
         };
 
         // Register system service event handler.
-        // The returned status handle should be used to report service status changes to the system.
         let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
 
         // Tell the system that service is running
@@ -104,28 +77,56 @@ mod ping_service {
             process_id: None,
         })?;
 
-        // For demo purposes this service sends a UDP packet once a second.
-        let loopback_ip = IpAddr::from(LOOPBACK_ADDR);
-        let sender_addr = SocketAddr::new(loopback_ip, 0);
-        let receiver_addr = SocketAddr::new(loopback_ip, RECEIVER_PORT);
-        let msg = PING_MESSAGE.as_bytes();
-        let socket = UdpSocket::bind(sender_addr).unwrap();
+        let rt = match Runtime::new() {
+            Ok(rt) => Ok(rt),
+            Err(_err) => Err(windows_service::Error::Winapi(Error::new(
+                ErrorKind::Other,
+                "Could not create the runtime.",
+            ))),
+        }?;
 
-        loop {
-            let _ = socket.send_to(msg, receiver_addr);
-
-            // Poll shutdown event.
-            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                // Break the loop either upon stop or channel disconnect
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-
-                // Continue work if no events were received within the timeout
-                Err(mpsc::RecvTimeoutError::Timeout) => (),
+        async fn await_shutdown(rx: mpsc::Receiver<()>) -> Result<()> {
+            // polls the current rx, if a there was a shutdown receiver, this will then resolve the future
+            loop{
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    // Break the loop either upon stop or channel disconnect
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    
+                    // Continue work if no events were received within the timeout
+                    Err(mpsc::RecvTimeoutError::Timeout) => (),
+                };
             };
+
+            Ok(())
         }
 
+
+        async fn runtime() -> Result<()> {
+            loop{
+                time::sleep(time::Duration::from_millis(10000)).await;
+
+                if let Ok(result) = reqwest::get(URL).await {
+                    if let  Ok(_body) = result.text().await {
+                    }
+                }
+            }
+        }
+
+        // Spawn the root task
+        rt.block_on(async {
+
+            let shutdown_join_handle = tokio::spawn(await_shutdown(shutdown_rx));
+            let runtime_handle = tokio::spawn(runtime());
+
+
+            tokio::select! {
+                _ = shutdown_join_handle => {},
+                _ = runtime_handle => {}
+            }
+        });
+
         // Tell the system that service has stopped.
-        status_handle.set_service_status(ServiceStatus {
+        match status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
             current_state: ServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
@@ -133,8 +134,11 @@ mod ping_service {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        })?;
-
+        }) {
+            Ok(_) => {},
+            Err(_) => {}
+        };
+        
         Ok(())
     }
 }
