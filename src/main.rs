@@ -29,7 +29,8 @@ mod ping_service {
 
     const SERVICE_NAME: &str = "test_service";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
-    const URL: &str = "https://eolr5l8a0t401et.m.pipedream.net";
+    //TODO : insert URL here
+    const URL: &str = "<YOUR URL HERE>";
 
     pub fn run() -> Result<()> {
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
