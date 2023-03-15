@@ -1,3 +1,6 @@
+use std::fs::File;
+use daemonize::Daemonize;
+
 #[cfg(windows)]
 #[tokio::main]
 async fn main() -> windows_service::Result<()> {
@@ -7,7 +10,26 @@ async fn main() -> windows_service::Result<()> {
 // TODO - add the unix based daemon as well
 #[cfg(not(windows))]
 fn main() {
-    panic!("This program is only intended to run on Windows.");
+    const URL: &str = "<YOUR URL HERE>";
+
+    let daemonize = Daemonize::new();
+
+    match daemonize.start() {
+        Ok(_) => println!("Success, daemonized"),
+        Err(e) => eprintln!("Error, {}", e),
+    }
+
+    let runtime = tokio::runtime::Runtime::new().expect("Runtime startup threw an error.");
+
+    runtime.block_on(async {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
+
+            if let Ok(result) = reqwest::get(URL).await {
+                if let Ok(_body) = result.text().await {}
+            }
+        }
+    });
 }
 
 #[cfg(windows)]
