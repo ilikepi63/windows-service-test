@@ -1,5 +1,5 @@
-use std::fs::File;
 use daemonize::Daemonize;
+use std::fs::File;
 
 #[cfg(windows)]
 #[tokio::main]
